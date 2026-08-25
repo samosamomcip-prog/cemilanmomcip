@@ -1,4 +1,6 @@
 CEMILAN MOMCIP V8.0
+- Hotfix V8.0.1: audit duplikat tidak lagi membuat sinkronisasi order berulang dengan respons 409.
+- Order lama tetap tampil setelah order baru disimpan dan diverifikasi dari cloud.
 - Sinkronisasi multi-user per baris; salinan perangkat lama tidak lagi mengunggah ulang seluruh database.
 - Refresh background mempertahankan semua isi form dan posisi kursor.
 - Service worker tidak lagi me-reload aplikasi otomatis saat user sedang input.

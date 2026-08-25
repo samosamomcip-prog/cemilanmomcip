@@ -7,7 +7,7 @@ const uid=p=>p+'-'+Date.now()+'-'+Math.random().toString(36).slice(2,7);
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const DBKEY='miniERPProduksi_v1';
 const PRINTKEY='cemilanMomcip_printWidth';
-const APP_VERSION='8.0.0';
+const APP_VERSION='8.0.1';
 window.__CEMILAN_MOMCIP_VERSION__=APP_VERSION;
 
 
@@ -193,7 +193,15 @@ function setCloudBaseline(snapshot={}){
   }
   try{localStorage.setItem(BASELINEKEY,JSON.stringify(compact))}catch(e){console.warn('Baseline cloud tidak dapat disimpan',e)}
 }
-async function upsertRows(table,rows){if(!rows?.length)return[];const size=100;let out=[];for(let i=0;i<rows.length;i+=size){const r=await supaFetch(`/rest/v1/${table}?on_conflict=id`,{method:'POST',body:rows.slice(i,i+size),prefer:'resolution=merge-duplicates,return=representation'})||[];out=out.concat(r)}return out}
+function dedupeRowsById(rows=[]){
+  const unique=new Map(),withoutId=[];
+  for(const row of rows||[]){
+    if(row?.id===undefined||row?.id===null||row?.id==='')withoutId.push(row);
+    else unique.set(String(row.id),row);
+  }
+  return [...unique.values(),...withoutId];
+}
+async function upsertRows(table,rows){rows=dedupeRowsById(rows);if(!rows.length)return[];const size=100;let out=[];for(let i=0;i<rows.length;i+=size){const r=await supaFetch(`/rest/v1/${table}?on_conflict=id`,{method:'POST',body:rows.slice(i,i+size),prefer:'resolution=merge-duplicates,return=representation'})||[];out=out.concat(r)}return out}
 async function flushDeleteQueue(){let q=getDeleteQueue();if(!q.length)return;const keep=[];for(const x of q){try{await supaFetch(`/rest/v1/${x.table}?id=eq.${encodeURIComponent(x.id)}`,{method:'DELETE'});}catch(e){console.warn('Delete cloud tertunda',x,e.message);keep.push(x)}}setDeleteQueue(keep);if(keep.length)throw new Error('Sebagian penghapusan masih menunggu sinkronisasi.')}
 const NORMALIZED_AUDIT_KEYS=new Set(['created_by','created_by_name','updated_by','updated_by_name','created_at','updated_at']);
 function rowEquivalent(remote,desired){return Object.keys(desired||{}).filter(k=>!NORMALIZED_AUDIT_KEYS.has(k)).every(k=>JSON.stringify(remote?.[k]??null)===JSON.stringify(desired?.[k]??null))}
@@ -242,11 +250,15 @@ async function syncChangedRows(table,rows,baselineRows=[]){
   return {changedIds,conflicts};
 }
 async function upsertMissingRows(table,rows){
-  if(!rows?.length)return;
+  rows=dedupeRowsById(rows);
+  if(!rows.length)return;
   const existing=await supaFetch(`/rest/v1/${table}?select=id`)||[];
   const ids=new Set(existing.map(x=>String(x.id)));
   const missing=rows.filter(x=>!ids.has(String(x.id)));
-  if(missing.length)await insertRows(table,missing);
+  // Tetap gunakan upsert karena dua perangkat dapat sama-sama melihat sebuah
+  // audit sebagai "belum ada" lalu menulisnya pada waktu yang hampir bersamaan.
+  // Konflik id tidak boleh menggagalkan sinkronisasi order yang sudah berhasil.
+  if(missing.length)await upsertRows(table,missing);
 }
 async function reconcileChildRows(table,parentField,desiredRows,parentIds){
   // Hapus child stale hanya untuk parent yang memang ada pada snapshot lokal saat ini.

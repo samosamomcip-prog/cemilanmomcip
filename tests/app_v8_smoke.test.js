@@ -59,6 +59,7 @@ vm.runInContext([
   auditKeys[0],
   extractFunction(app, 'sameValue'),
   extractFunction(app, 'mergeConcurrentRow'),
+  extractFunction(app, 'dedupeRowsById'),
   extractFunction(app, 'captureFormState'),
   extractFunction(app, 'restoreFormState'),
 ].join('\n'), context);
@@ -89,9 +90,17 @@ const conflict = context.mergeConcurrentRow(base, { ...remote, customer: 'C' }, 
 assert.equal(conflict.merged.customer, 'C');
 assert.ok(Array.from(conflict.conflicts).includes('customer'));
 
-assert.match(app, /const APP_VERSION='8\.0\.0'/);
-assert.match(index, /v8\.0/);
+const deduped = context.dedupeRowsById([
+  { id: 'A-1', note: 'lama' },
+  { id: 'A-1', note: 'terbaru' },
+  { id: 'A-2', note: 'tetap' },
+]);
+assert.equal(deduped.length, 2);
+assert.equal(deduped.find(x => x.id === 'A-1').note, 'terbaru');
+assert.match(app, /async function upsertMissingRows[\s\S]*if\(missing\.length\)await upsertRows\(table,missing\)/);
+
+assert.match(app, /const APP_VERSION='8\.0\.1'/);
+assert.match(index, /v8\.0\.1/);
 assert.ok(!index.includes('location.reload()'), 'service worker must not force-reload an active form');
 
 console.log('PASS: V8 syntax, form preservation, version, and concurrent-row merge');
-
