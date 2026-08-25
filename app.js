@@ -7,6 +7,98 @@ const uid=p=>p+'-'+Date.now()+'-'+Math.random().toString(36).slice(2,7);
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const DBKEY='miniERPProduksi_v1';
 const PRINTKEY='cemilanMomcip_printWidth';
+
+
+/* ===== V6 ONLINE / SUPABASE ===== */
+const SUPABASE_URL='https://xwnwsjwhizpoukqctylp.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY='sb_publishable_Na-i6kSpsvb73njlkFzcTA_e2DOj34H';
+const AUTHKEY='cemilanMomcip_supabaseAuth_v1';
+let cloudSyncTimer=null, cloudSyncBusy=false, cloudSyncPending=false;
+function getAuth(){try{return JSON.parse(localStorage.getItem(AUTHKEY)||'null')}catch(_){return null}}
+function setAuth(v){if(v)localStorage.setItem(AUTHKEY,JSON.stringify(v));else localStorage.removeItem(AUTHKEY)}
+function setCloudStatus(text,state=''){const el=document.querySelector('#cloudStatus');if(!el)return;el.textContent=text;el.dataset.state=state}
+async function supaFetch(path,{method='GET',body=null,prefer=''}={}){
+  const a=getAuth();
+  if(!a?.access_token)throw new Error('Belum login');
+  const h={'apikey':SUPABASE_PUBLISHABLE_KEY,'Authorization':'Bearer '+a.access_token,'Content-Type':'application/json'};
+  if(prefer)h['Prefer']=prefer;
+  const r=await fetch(SUPABASE_URL+path,{method,headers:h,body:body===null?null:JSON.stringify(body)});
+  if(r.status===401&&a.refresh_token){await refreshSession();return supaFetch(path,{method,body,prefer})}
+  const text=await r.text();
+  if(!r.ok)throw new Error(text||('HTTP '+r.status));
+  return text?JSON.parse(text):null;
+}
+async function loginSupabase(email,password){
+  const r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=password',{method:'POST',headers:{'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+  const j=await r.json();if(!r.ok)throw new Error(j?.msg||j?.error_description||j?.error||'Login gagal');
+  setAuth(j);return j;
+}
+async function refreshSession(){const a=getAuth();if(!a?.refresh_token)throw new Error('Sesi berakhir');const r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:a.refresh_token})});const j=await r.json();if(!r.ok){setAuth(null);throw new Error('Sesi berakhir. Login ulang.')}setAuth(j);return j}
+function showLogin(message=''){
+  let x=document.querySelector('#loginOverlay');if(!x)return;
+  x.style.display='flex';document.querySelector('#loginMsg').textContent=message||'';
+}
+function hideLogin(){const x=document.querySelector('#loginOverlay');if(x)x.style.display='none'}
+window.doCloudLogin=async()=>{const email=document.querySelector('#loginEmail').value.trim(),password=document.querySelector('#loginPassword').value;if(!email||!password)return document.querySelector('#loginMsg').textContent='Email dan password wajib diisi.';const b=document.querySelector('#loginBtn');b.disabled=true;b.textContent='Masuk...';try{await loginSupabase(email,password);hideLogin();setCloudStatus('Online','ok');await bootstrapCloud()}catch(e){document.querySelector('#loginMsg').textContent='Login gagal: '+e.message}finally{b.disabled=false;b.textContent='Masuk'}}
+window.cloudLogout=()=>{if(confirm('Keluar dari akun online?')){setAuth(null);setCloudStatus('Offline','');showLogin('Silakan login kembali.')}}
+function titleOrderType(v){return String(v||'').toUpperCase()==='RESELLER'?'Reseller':'Reguler'}
+function titleOrderStatus(v){v=String(v||'').toUpperCase();return v==='SELESAI'?'Selesai':v==='BATAL'?'Batal':'Baru'}
+function titlePackType(v){return String(v||'').toUpperCase()==='OUTER'?'Outer':'Inner'}
+function titleUnit(v){return String(v||'').toUpperCase()==='PACK'?'Pack':'Pcs'}
+async function clearTable(table,field='id'){try{await supaFetch(`/rest/v1/${table}?${field}=not.is.null`,{method:'DELETE'})}catch(e){console.warn('clear',table,e.message);throw e}}
+async function insertRows(table,rows){if(!rows.length)return;const size=200;for(let i=0;i<rows.length;i+=size)await supaFetch(`/rest/v1/${table}`,{method:'POST',body:rows.slice(i,i+size),prefer:'return=minimal'})}
+function dbToCloud(){
+  const products=db.products.map(p=>({id:p.id,name:p.name,unit:titleUnit(p.unit),pack_size:Number(p.packSize||1),price_regular:Number(p.priceRegular||0),price_regular_pack:Number(p.priceRegularPack||0),price_reseller:Number(p.priceReseller||0),price_reseller_pack:Number(p.priceResellerPack||0),hpp:Number(p.hpp||0),min_stock:Number(p.minStock||0),pack_weight:Number(p.packWeight||0),weight_unit:p.weightUnit||'gram',is_active:true}));
+  const raw_materials=db.materials.map(x=>({id:x.id,name:x.name,unit:x.unit||'Pcs',stock:Number(x.stock||0),avg_cost:Number(x.avgCost||0),min_stock:Number(x.minStock||0),is_active:true}));
+  const packaging=db.packaging.map(x=>({id:x.id,name:x.name,type:titlePackType(x.type),unit:x.unit||'Pcs',stock:Number(x.stock||0),avg_cost:Number(x.avgCost||0),min_stock:Number(x.minStock||0),is_active:true}));
+  const orders=db.orders.map(o=>({id:o.id,order_no:o.no,order_date:o.date,customer:o.customer||'',order_type:titleOrderType(o.type),status:titleOrderStatus(o.status),completed_at:o.completedAt||null}));
+  const order_items=[];db.orders.forEach(o=>(o.items||[]).forEach(i=>order_items.push({order_id:o.id,product_id:i.productId,product_name:i.name||'',order_qty:Number((i.orderQty??i.qty)||0),order_unit:titleUnit(i.orderUnit),pack_size:Number(i.packSize||1),qty_pcs:Number(i.qty||0),unit_price:Number((i.unitPrice??i.price)||0),price_per_pcs:Number(i.price||0),line_total:Number(i.lineTotal||0),hpp_snapshot:Number(i.hpp||0)})));
+  const raw_material_transactions=db.materialTx.map(t=>({id:t.id,transaction_date:t.date,material_id:t.itemId,material_name:t.itemName||'',transaction_type:t.mode,qty:Number(t.qty||0),unit:t.unit||'',unit_cost:Number(t.cost||0),note:t.note||null,production_id:t.productionId||null}));
+  const packaging_transactions=db.packagingTx.map(t=>({id:t.id,transaction_date:t.date,packaging_id:t.itemId,packaging_name:t.itemName||'',transaction_type:t.mode,qty:Number(t.qty||0),unit:t.unit||'',unit_cost:Number(t.cost||0),note:t.note||null,production_id:t.productionId||null}));
+  const productions=db.productions.map(p=>({id:p.id,production_no:p.no,production_date:p.date,product_id:p.productId,product_name:p.productName||'',output_qty:Number(p.outputQty||p.qty||0),output_unit:titleUnit(p.outputUnit),qty_pcs:Number(p.qty||0),reject_qty:Number(p.reject||0),reject_output_qty:Number(p.rejectOutputQty||0),pack_size:Number(p.packSize||1),note:p.note||null,cost_gas:Number(p.otherCosts?.gas||0),cost_electricity:Number(p.otherCosts?.listrik||0),cost_labor:Number(p.otherCosts?.tenagaKerja||0),cost_production:Number(p.otherCosts?.ongkosProduksi||0),cost_other:Number(p.otherCosts?.lainnya||0)}));
+  const production_raw_materials=[],production_packaging=[];db.productions.forEach(p=>{(p.rawMaterialUsage||[]).forEach(u=>production_raw_materials.push({production_id:p.id,material_id:u.itemId||null,material_name:u.name||'',qty:Number(u.qty||0),unit:u.unit||'',unit_cost:Number(u.unitCost||0),total_cost:Number(u.cost??(Number(u.qty||0)*Number(u.unitCost||0))),source_transaction_id:u.sourceTxId||null}));(p.packagingUsage||[]).forEach(u=>production_packaging.push({production_id:p.id,packaging_id:u.itemId||null,packaging_name:u.name||'',qty:Number(u.qty||0),unit:u.unit||'',unit_cost:Number(u.unitCost||0),total_cost:Number(u.cost??(Number(u.qty||0)*Number(u.unitCost||0))),source_transaction_id:u.sourceTxId||null}))});
+  const audit_trail=(db.auditTrail||[]).map(a=>({id:a.id,event_time:a.at||new Date().toISOString(),entity:a.entity||'',action:a.action||'',reference:a.ref||null,note:a.note||null,before_data:a.before||null,after_data:a.after||null}));
+  return {products,raw_materials,packaging,orders,order_items,raw_material_transactions,packaging_transactions,productions,production_raw_materials,production_packaging,audit_trail};
+}
+async function pushFullState(){
+  if(cloudSyncBusy){cloudSyncPending=true;return}cloudSyncBusy=true;setCloudStatus('Sinkronisasi...','sync');
+  try{
+    const d=dbToCloud();
+    for(const t of ['production_packaging','production_raw_materials','order_items','raw_material_transactions','packaging_transactions','audit_trail','productions','orders'])await clearTable(t);
+    // Master hanya dihapus setelah transaksi anak bersih.
+    for(const t of ['products','raw_materials','packaging'])await clearTable(t);
+    for(const t of ['products','raw_materials','packaging','orders','order_items','productions','raw_material_transactions','packaging_transactions','production_raw_materials','production_packaging','audit_trail'])await insertRows(t,d[t]);
+    setCloudStatus('Tersinkron','ok');localStorage.setItem('cemilanMomcip_lastSync',new Date().toISOString());
+  }catch(e){console.error(e);setCloudStatus('Gagal sync','bad')}
+  finally{cloudSyncBusy=false;if(cloudSyncPending){cloudSyncPending=false;setTimeout(pushFullState,400)}}
+}
+function queueCloudSync(){if(!getAuth()?.access_token)return;clearTimeout(cloudSyncTimer);cloudSyncTimer=setTimeout(pushFullState,700)}
+async function fetchAll(table,order=''){return await supaFetch(`/rest/v1/${table}?select=*${order?`&order=${order}`:''}`)||[]}
+async function pullCloudState(){
+  const [products,raw,pack,orders,items,rtx,ptx,prods,prm,ppk,auditRows]=await Promise.all([
+    fetchAll('products','id.asc'),fetchAll('raw_materials','id.asc'),fetchAll('packaging','id.asc'),fetchAll('orders','order_date.asc'),fetchAll('order_items'),fetchAll('raw_material_transactions','transaction_date.asc'),fetchAll('packaging_transactions','transaction_date.asc'),fetchAll('productions','production_date.asc'),fetchAll('production_raw_materials'),fetchAll('production_packaging'),fetchAll('audit_trail','event_time.desc')]);
+  if(!products.length&&!orders.length&&!prods.length&&!rtx.length&&!ptx.length)return false;
+  const out=cloneSeed();
+  out.products=products.map(p=>({id:p.id,name:p.name,unit:'pcs',packSize:Number(p.pack_size||1),priceRegular:Number(p.price_regular||0),priceRegularPack:Number(p.price_regular_pack||0),priceReseller:Number(p.price_reseller||0),priceResellerPack:Number(p.price_reseller_pack||0),hpp:Number(p.hpp||0),minStock:Number(p.min_stock||0),packWeight:Number(p.pack_weight||0),weightUnit:p.weight_unit||'gram'}));
+  out.materials=raw.map(x=>({id:x.id,name:x.name,unit:x.unit||'pcs',stock:Number(x.stock||0),avgCost:Number(x.avg_cost||0),minStock:Number(x.min_stock||0)}));
+  out.packaging=pack.map(x=>({id:x.id,name:x.name,type:String(x.type||'Inner').toUpperCase(),unit:x.unit||'pcs',stock:Number(x.stock||0),avgCost:Number(x.avg_cost||0),minStock:Number(x.min_stock||0)}));
+  const itemMap={};items.forEach(i=>(itemMap[i.order_id]??=[]).push({productId:i.product_id,name:i.product_name,qty:Number(i.qty_pcs||0),orderQty:Number(i.order_qty||0),orderUnit:String(i.order_unit||'Pcs').toUpperCase(),packSize:Number(i.pack_size||1),unitPrice:Number(i.unit_price||0),lineTotal:Number(i.line_total||0),price:Number(i.price_per_pcs||0),hpp:Number(i.hpp_snapshot||0)}));
+  out.orders=orders.map(o=>({id:o.id,no:o.order_no,date:o.order_date,type:String(o.order_type||'Reguler').toUpperCase(),customer:o.customer,status:String(o.status||'Baru').toUpperCase(),completedAt:o.completed_at||null,items:itemMap[o.id]||[]}));
+  out.materialTx=rtx.map(t=>({id:t.id,date:t.transaction_date,itemId:t.material_id,itemName:t.material_name,mode:t.transaction_type,qty:Number(t.qty||0),cost:Number(t.unit_cost||0),unit:t.unit||'',note:t.note||'',productionId:t.production_id||null}));
+  out.packagingTx=ptx.map(t=>({id:t.id,date:t.transaction_date,itemId:t.packaging_id,itemName:t.packaging_name,mode:t.transaction_type,qty:Number(t.qty||0),cost:Number(t.unit_cost||0),unit:t.unit||'',note:t.note||'',productionId:t.production_id||null}));
+  const rmMap={},pkMap={};prm.forEach(u=>(rmMap[u.production_id]??=[]).push({itemId:u.material_id,name:u.material_name,qty:Number(u.qty||0),unit:u.unit||'',unitCost:Number(u.unit_cost||0),cost:Number(u.total_cost||0),sourceTxId:u.source_transaction_id||null}));ppk.forEach(u=>(pkMap[u.production_id]??=[]).push({itemId:u.packaging_id,name:u.packaging_name,qty:Number(u.qty||0),unit:u.unit||'',unitCost:Number(u.unit_cost||0),cost:Number(u.total_cost||0),sourceTxId:u.source_transaction_id||null}));
+  out.productions=prods.map(p=>({id:p.id,no:p.production_no,date:p.production_date,productId:p.product_id,productName:p.product_name,qty:Number(p.qty_pcs||0),outputQty:Number(p.output_qty||0),outputUnit:String(p.output_unit||'Pcs').toUpperCase(),packSize:Number(p.pack_size||1),reject:Number(p.reject_qty||0),rejectOutputQty:Number(p.reject_output_qty||0),note:p.note||'',rawMaterialUsage:rmMap[p.id]||[],packagingUsage:pkMap[p.id]||[],otherCosts:{gas:Number(p.cost_gas||0),listrik:Number(p.cost_electricity||0),tenagaKerja:Number(p.cost_labor||0),ongkosProduksi:Number(p.cost_production||0),lainnya:Number(p.cost_other||0)},costingCaptured:true}));
+  out.auditTrail=auditRows.map(a=>({id:a.id,at:a.event_time,entity:a.entity,action:a.action,ref:a.reference,note:a.note,before:a.before_data,after:a.after_data}));
+  db=migrateCostingData(out);recalcAll();localStorage.setItem(DBKEY,JSON.stringify(db));return true;
+}
+async function bootstrapCloud(){
+  try{setCloudStatus('Memuat data...','sync');const hasRemote=await pullCloudState();if(hasRemote){setCloudStatus('Online','ok');render(active)}else{setCloudStatus('Upload awal...','sync');await pushFullState();render(active)}}catch(e){console.error(e);setCloudStatus('Gagal online','bad');alert('Koneksi Supabase gagal: '+e.message)}
+}
+async function cloudInit(){
+  const a=getAuth();if(!a){showLogin();return}
+  try{if(a.expires_at&&Date.now()/1000>Number(a.expires_at)-60)await refreshSession();hideLogin();await bootstrapCloud()}catch(e){setAuth(null);showLogin(e.message)}
+}
+/* ===== /V6 ONLINE ===== */
 const getPrintWidth=()=>localStorage.getItem(PRINTKEY)||'80';
 const seed={
   products:[
@@ -72,7 +164,7 @@ function recalcAll(){
  apply(db.materialTx,db.materials);apply(db.packagingTx,db.packaging);
  db.fgStock={};db.products.forEach(p=>db.fgStock[p.id]=0);db.productions.forEach(p=>db.fgStock[p.productId]=(Number(db.fgStock[p.productId])||0)+Number(p.qty||0));db.orders.filter(o=>o.status==='SELESAI').forEach(o=>(o.items||[]).forEach(i=>db.fgStock[i.productId]=(Number(db.fgStock[i.productId])||0)-Number(i.qty||0)));
 }
-function save(){localStorage.setItem(DBKEY,JSON.stringify(db));render(active)}
+function save(){localStorage.setItem(DBKEY,JSON.stringify(db));render(active);queueCloudSync()}
 const pages=[
  ['dashboard','⌂','Home'],['order','🧾','Order'],['material','🥩','Raw Material'],['packaging','📦','Packaging'],
  ['production','🍳','Produksi'],['stock','🗃️','Stok'],['reports','📊','Laporan'],['settings','⚙️','Master']
@@ -420,4 +512,4 @@ window.backupData=()=>{let b=new Blob([JSON.stringify(db,null,2)],{type:'applica
 window.restoreData=e=>{let f=e.target.files[0];if(!f)return;let r=new FileReader();r.onload=()=>{try{db=JSON.parse(r.result);save();alert('Backup berhasil direstore.')}catch(err){alert('File backup tidak valid.')}};r.readAsText(f)}
 window.resetData=()=>{if(confirm('Hapus semua data aplikasi? Tindakan ini tidak bisa dibatalkan.')){db=cloneSeed();save()}}
 
-buildNav();render('dashboard');setInterval(()=>{let c=$('#clock');if(c)c.textContent=new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})},1000);
+buildNav();render('dashboard');cloudInit();setInterval(()=>{let c=$('#clock');if(c)c.textContent=new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})},1000);

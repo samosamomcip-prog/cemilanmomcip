@@ -20,6 +20,9 @@
     .mobilelist{display:none}.ordercard,.reportcard{border:1px solid var(--line);border-radius:14px;padding:12px;margin:8px 0;background:#fff}.ordercard .top,.reportcard .top{display:flex;justify-content:space-between;gap:8px}.kv{display:grid;grid-template-columns:110px 1fr;gap:5px;font-size:12px;margin-top:6px}.kv span:nth-child(odd){color:var(--muted)}
     .bottomnav{position:fixed;bottom:0;left:0;right:0;height:var(--navh);background:#fff;border-top:1px solid var(--line);display:flex;overflow-x:auto;z-index:30;box-shadow:0 -2px 10px #7b4b3910;padding-bottom:env(safe-area-inset-bottom)}.bottomnav button{border:0;background:#fff;min-width:82px;flex:1 0 82px;padding:9px 5px;font-size:10px;color:#6d625d}.bottomnav button .ico{display:block;font-size:20px;line-height:22px}.bottomnav button.active{font-weight:800;color:var(--accent);background:#fff7f5}
     .subtabs{display:flex;gap:7px;margin:10px 0 14px;overflow-x:auto}.subtabs button{border:1px solid var(--line);background:#fff;padding:9px 11px;border-radius:10px;white-space:nowrap;font-weight:750;color:var(--muted)}.subtabs button.active{background:var(--soft);color:var(--accent);border-color:#efb9bf}.cost-warning{padding:10px;border-radius:11px;background:#fff8e5;border:1px solid #edcf8c;color:#785b17;margin:10px 0}.cost-total td{background:#fff0ee}.cost-hpp td{background:#fbe4e0;font-size:1.05em}.costing-note{font-size:11px;color:var(--muted)}
+
+    .cloudpill{font-size:10px;padding:5px 8px;border-radius:999px;background:#eee;color:#555;white-space:nowrap}.cloudpill[data-state="ok"]{background:#e5f5e6;color:#2d6e32}.cloudpill[data-state="sync"]{background:#fff0cf;color:#845f00}.cloudpill[data-state="bad"]{background:#fee8e6;color:#a72820}
+    .login-overlay{position:fixed;inset:0;background:rgba(255,249,247,.97);z-index:9999;display:none;align-items:center;justify-content:center;padding:18px}.login-card{width:min(420px,100%);background:#fff;border:1px solid var(--line);border-radius:20px;padding:20px;box-shadow:0 10px 35px #60301f24}.login-logo{width:76px;height:76px;border-radius:50%;object-fit:cover;display:block;margin:0 auto 8px}.login-card h2{text-align:center;margin:4px 0;color:#60301f}.login-card .tag{text-align:center;color:var(--accent);font-weight:700;font-size:12px;margin-bottom:18px}.login-card input{margin-bottom:10px}.login-msg{min-height:20px;color:var(--bad);font-size:12px;margin:5px 0}.login-card .btn{width:100%}
     .print-only{display:none}.print-title{display:flex;align-items:center;gap:12px;margin-bottom:14px}.print-title img{width:64px;height:64px;border-radius:50%}
     @media(min-width:760px){.wrap{padding-bottom:96px}.bottomnav{max-width:980px;left:50%;transform:translateX(-50%);border:1px solid var(--line);border-radius:18px 18px 0 0}}
     @media(max-width:640px){.grid3,.row3{grid-template-columns:1fr 1fr}.hide-mobile{display:none}.desktop-table{display:none}.mobilelist{display:block}.brand h1{font-size:18px}.brand img{width:44px;height:44px}.wrap{padding-left:10px;padding-right:10px}.grid3{grid-template-columns:1fr 1fr}.tablewrap.compact table{min-width:0}}
@@ -28,9 +31,22 @@
   </style>
 </head>
 <body>
+
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-card">
+    <img src="logo.jpg" class="login-logo" alt="Logo Cemilan Momcip">
+    <h2>CEMILAN MOMCIP</h2>
+    <div class="tag">Data Online • Supabase</div>
+    <label>Email</label><input id="loginEmail" type="email" autocomplete="username" placeholder="Email admin">
+    <label>Password</label><input id="loginPassword" type="password" autocomplete="current-password" placeholder="Password">
+    <div id="loginMsg" class="login-msg"></div>
+    <button id="loginBtn" class="btn" onclick="doCloudLogin()">Masuk</button>
+    <p class="small" style="text-align:center;margin-top:12px">Login menggunakan akun yang dibuat di Supabase Authentication.</p>
+  </div>
+</div>
 <header>
   <div class="brand"><img src="logo.jpg" alt="Logo Cemilan Momcip"><div><h1>CEMILAN MOMCIP</h1><div class="tag">Homemade Snack &amp; Drink With Love</div></div></div>
-  <div class="head-actions"><button id="installBtn" class="btn secondary" style="display:none;padding:8px 10px">Install</button><span id="clock" class="small"></span></div>
+  <div class="head-actions"><span id="cloudStatus" class="cloudpill">Offline</span><button class="btn secondary" style="padding:7px 9px;font-size:11px" onclick="cloudLogout()">Keluar</button><button id="installBtn" class="btn secondary" style="display:none;padding:8px 10px">Install</button><span id="clock" class="small"></span></div>
 </header>
 <div class="wrap">
   <section id="dashboard" class="section active"></section>
@@ -43,7 +59,7 @@
   <section id="settings" class="section"></section>
 </div>
 <div class="bottomnav no-print" id="bottomnav"></div>
-<script src="app.js?v=5.1.0"></script>
+<script src="app.js?v=6.0.0"></script>
 <script>
 if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
 let deferredInstallPrompt=null;
