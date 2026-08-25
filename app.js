@@ -180,32 +180,62 @@ function mergeSharedDb(remoteState,localState){
   out.fgStock={};
   return migrateCostingData(out);
 }
+function syncSleep(ms){return new Promise(r=>setTimeout(r,ms))}
 async function pushSharedState({mirror=true}={}){
-  if(cloudSyncBusy){cloudSyncPending=true;return}
-  if(!getAuth()?.access_token)return;
+  if(cloudSyncBusy){cloudSyncPending=true;return false}
+  if(!getAuth()?.access_token)return false;
   cloudSyncBusy=true;setCloudStatus('Sinkronisasi...','sync');
+  const localStartHash=stateHash(db);
+  let payload=migrateCostingData(JSON.parse(JSON.stringify(db)));
+  let check=null,success=false;
   try{
-    // Selalu baca snapshot terbaru dahulu agar input dari perangkat lain tidak tertimpa.
-    const remote=await fetchStateRow();
-    let payload=mergeSharedDb(remote?.after_data||null,db);
-    const hash=stateHash(payload);
-    await upsertRows('audit_trail',[{id:STATE_ROW_ID,event_time:new Date().toISOString(),entity:'SYSTEM',action:'SYNC_STATE',reference:getDeviceId(),note:hash,before_data:null,after_data:payload}]);
-    // Verifikasi server benar-benar menerima state yang baru. Bila ada writer lain tepat bersamaan, merge lagi sekali.
-    let check=await fetchStateRow();
-    if(check?.note!==hash){
-      payload=mergeSharedDb(check?.after_data||null,payload);
-      const hash2=stateHash(payload);
-      await upsertRows('audit_trail',[{id:STATE_ROW_ID,event_time:new Date().toISOString(),entity:'SYSTEM',action:'SYNC_STATE',reference:getDeviceId(),note:hash2,before_data:null,after_data:payload}]);
+    // V6.9: optimistic merge dengan retry + jitter. Dua perangkat boleh input hampir bersamaan
+    // tanpa langsung dianggap gagal sinkronisasi.
+    const MAX_ATTEMPTS=12;
+    for(let attempt=0;attempt<MAX_ATTEMPTS;attempt++){
+      const remote=await fetchStateRow();
+      payload=mergeSharedDb(remote?.after_data||null,payload);
+      const hash=stateHash(payload);
+      await upsertRows('audit_trail',[{id:STATE_ROW_ID,event_time:new Date().toISOString(),entity:'SYSTEM',action:'SYNC_STATE',reference:getDeviceId(),note:hash,before_data:null,after_data:payload}]);
+
+      // Jeda acak mencegah dua device retry dalam lock-step.
+      await syncSleep(90 + Math.floor(Math.random()*170) + attempt*35);
       check=await fetchStateRow();
-      if(check?.note!==hash2)throw new Error('Data cloud berubah bersamaan dari perangkat lain. Coba sinkronisasi sekali lagi.');
+      if(check?.note===hash){success=true;break}
+
+      // Writer lain menang sesaat: ambil hasilnya, merge kembali, lalu coba lagi.
+      payload=mergeSharedDb(check?.after_data||null,payload);
+      setCloudStatus(`Sinkronisasi... ${attempt+2}/${MAX_ATTEMPTS}`,'sync');
+      await syncSleep(120 + Math.floor(Math.random()*260) + attempt*55);
     }
-    db=migrateCostingData(payload);recalcAll();localStorage.setItem(DBKEY,JSON.stringify(db));render(active);
+    if(!success)throw new Error('Cloud sedang sangat sibuk. Data lokal tetap aman dan akan dicoba sinkron otomatis kembali.');
+
+    // Bila user membuat input baru ketika proses sync masih berjalan, jangan timpa input tersebut.
+    const changedDuringSync=stateHash(db)!==localStartHash;
+    if(changedDuringSync){
+      db=mergeSharedDb(payload,db);
+      setDirty(true);
+      cloudSyncPending=true;
+    }else{
+      db=migrateCostingData(payload);
+      setDirty(false);
+    }
+    recalcAll();localStorage.setItem(DBKEY,JSON.stringify(db));render(active);
     const finalHash=check?.note||stateHash(payload);
-    setDirty(false);localStorage.setItem('cemilanMomcip_lastSync',new Date().toISOString());localStorage.setItem('cemilanMomcip_lastCloudHash',finalHash);setCloudStatus('Online','ok');
-    if(mirror)setTimeout(()=>mirrorNormalizedState().catch(e=>console.warn('Mirror normalized gagal:',e.message)),80);
-    return true;
-  }catch(e){console.error('pushSharedState',e);setDirty(true);setCloudStatus('Belum tersinkron','bad');throw e}
-  finally{cloudSyncBusy=false;if(cloudSyncPending){cloudSyncPending=false;setTimeout(()=>pushSharedState().catch(()=>{}),250)}}
+    localStorage.setItem('cemilanMomcip_lastSync',new Date().toISOString());
+    localStorage.setItem('cemilanMomcip_lastCloudHash',finalHash);
+    setCloudStatus(changedDuringSync?'Menunggu sync...':'Online',changedDuringSync?'sync':'ok');
+    if(mirror)setTimeout(()=>mirrorNormalizedState().catch(e=>console.warn('Mirror normalized gagal:',e.message)),120+Math.floor(Math.random()*180));
+    return !changedDuringSync;
+  }catch(e){
+    console.error('pushSharedState',e);setDirty(true);setCloudStatus('Menunggu sync...','sync');
+    // Jangan hilangkan data lokal. Jadwalkan retry otomatis dengan jitter.
+    cloudSyncPending=true;
+    throw e;
+  }finally{
+    cloudSyncBusy=false;
+    if(cloudSyncPending){cloudSyncPending=false;setTimeout(()=>pushSharedState().catch(()=>{}),650+Math.floor(Math.random()*900))}
+  }
 }
 async function pullSharedState({force=false}={}){
   const row=await fetchStateRow();if(!row?.after_data)return false;
@@ -240,7 +270,7 @@ async function mirrorNormalizedState(){
 }
 function queueCloudSync(){
   if(!getAuth()?.access_token)return;
-  setDirty(true);setCloudStatus('Menunggu sync...','sync');clearTimeout(cloudSyncTimer);cloudSyncTimer=setTimeout(()=>pushSharedState().catch(e=>console.warn('Auto sync gagal:',e.message)),80);
+  setDirty(true);setCloudStatus('Menunggu sync...','sync');clearTimeout(cloudSyncTimer);cloudSyncTimer=setTimeout(()=>pushSharedState().catch(e=>console.warn('Auto sync tertunda:',e.message)),180+Math.floor(Math.random()*420));
 }
 
 async function fetchAll(table,order=''){return await supaFetch(`/rest/v1/${table}?select=*${order?`&order=${order}`:''}`)||[]}
@@ -277,7 +307,7 @@ async function cloudInit(){
   try{if(a.expires_at&&Date.now()/1000>Number(a.expires_at)-60)await refreshSession();await loadCurrentProfile();await bootstrapCloud();hideLogin();startCloudPolling()}catch(e){console.error(e);showLogin('Koneksi online gagal: '+e.message)}
 }
 function startCloudPolling(){
-  clearInterval(cloudPollTimer);cloudPollTimer=setInterval(async()=>{if(!getAuth()?.access_token||cloudSyncBusy)return;try{if(isDirty())await pushSharedState();else await pullSharedState()}catch(e){console.warn('poll sync',e.message)}},3000)
+  clearTimeout(cloudPollTimer);const tick=async()=>{if(getAuth()?.access_token&&!cloudSyncBusy){try{if(isDirty())await pushSharedState();else await pullSharedState()}catch(e){console.warn('poll sync',e.message)}}cloudPollTimer=setTimeout(tick,2600+Math.floor(Math.random()*2200))};cloudPollTimer=setTimeout(tick,1800+Math.floor(Math.random()*1800))
 }
 window.cloudSyncNow=async()=>{try{setCloudStatus('Sinkronisasi...','sync');if(isDirty())await pushSharedState();else await pullSharedState({force:true});setCloudStatus('Online','ok')}catch(e){setCloudStatus('Gagal sync','bad');alert('Sinkronisasi gagal: '+e.message)}};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&getAuth()?.access_token&&!cloudSyncBusy){(isDirty()?pushSharedState():pullSharedState({force:true})).catch(()=>{})}});
