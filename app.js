@@ -38,7 +38,9 @@ async function validateSession(){
   if(!r.ok)throw new Error(j?.msg||j?.error_description||j?.error||text||('Auth HTTP '+r.status));
   return j;
 }
-async function supaFetch(path,{method='GET',body=null,prefer='',_retried=false}={}){
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function isJwtFutureMessage(msg=''){return /jwt\s+issued\s+at\s+future/i.test(String(msg||''))}
+async function supaFetch(path,{method='GET',body=null,prefer='',_retried=false,_futureRetry=0}={}){
   let a=getAuth();
   if(!a?.access_token)throw new Error('Belum login');
   const h={
@@ -52,14 +54,19 @@ async function supaFetch(path,{method='GET',body=null,prefer='',_retried=false}=
   if(prefer)h['Prefer']=prefer;
   const r=await fetch(SUPABASE_URL+path,{method,headers:h,body:body===null?null:JSON.stringify(body)});
   const text=await r.text();let parsed=null;try{parsed=text?JSON.parse(text):null}catch(_){}
+  const msg=parsed?.message||parsed?.msg||parsed?.error_description||parsed?.error||text||('HTTP '+r.status);
+  if(r.status===401&&isJwtFutureMessage(msg)&&_futureRetry<4){
+    const delays=[2500,5000,8000,12000];
+    const wait=delays[_futureRetry]||12000;
+    setCloudStatus(`Menunggu sinkronisasi waktu... ${Math.round(wait/1000)} dtk`,'sync');
+    await sleep(wait);
+    return supaFetch(path,{method,body,prefer,_retried,_futureRetry:_futureRetry+1});
+  }
   if(r.status===401&&!_retried&&a.refresh_token){
     await refreshSession();
-    return supaFetch(path,{method,body,prefer,_retried:true});
+    return supaFetch(path,{method,body,prefer,_retried:true,_futureRetry});
   }
-  if(!r.ok){
-    const msg=parsed?.message||parsed?.msg||parsed?.error_description||parsed?.error||text||('HTTP '+r.status);
-    throw new Error(`HTTP ${r.status}: ${msg}`);
-  }
+  if(!r.ok)throw new Error(`HTTP ${r.status}: ${msg}`);
   return parsed;
 }
 async function loginSupabase(email,password){
@@ -84,7 +91,7 @@ function showLogin(message=''){
   x.style.display='flex';document.querySelector('#loginMsg').textContent=message||'';
 }
 function hideLogin(){const x=document.querySelector('#loginOverlay');if(x)x.style.display='none'}
-window.doCloudLogin=async()=>{const email=document.querySelector('#loginEmail').value.trim(),password=document.querySelector('#loginPassword').value;if(!email||!password)return document.querySelector('#loginMsg').textContent='Email dan password wajib diisi.';const b=document.querySelector('#loginBtn');b.disabled=true;b.textContent='Masuk...';try{await loginSupabase(email,password);setCloudStatus('Memuat data...','sync');await bootstrapCloud();hideLogin()}catch(e){console.error(e);document.querySelector('#loginMsg').textContent='Gagal masuk: '+e.message;showLogin(document.querySelector('#loginMsg').textContent)}finally{b.disabled=false;b.textContent='Masuk'}}
+window.doCloudLogin=async()=>{const email=document.querySelector('#loginEmail').value.trim(),password=document.querySelector('#loginPassword').value;if(!email||!password)return document.querySelector('#loginMsg').textContent='Email dan password wajib diisi.';const b=document.querySelector('#loginBtn');b.disabled=true;b.textContent='Masuk...';try{await loginSupabase(email,password);setCloudStatus('Memuat data...','sync');document.querySelector('#loginMsg').textContent='Menghubungkan database...';await bootstrapCloud();document.querySelector('#loginMsg').textContent='';hideLogin()}catch(e){console.error(e);document.querySelector('#loginMsg').textContent='Gagal masuk: '+e.message;showLogin(document.querySelector('#loginMsg').textContent)}finally{b.disabled=false;b.textContent='Masuk'}}
 window.cloudLogout=()=>{if(confirm('Keluar dari akun online?')){setAuth(null);setCloudStatus('Offline','');showLogin('Silakan login kembali.')}}
 function titleOrderType(v){return String(v||'').toUpperCase()==='RESELLER'?'Reseller':'Reguler'}
 function titleOrderStatus(v){v=String(v||'').toUpperCase();return v==='SELESAI'?'Selesai':v==='BATAL'?'Batal':'Baru'}

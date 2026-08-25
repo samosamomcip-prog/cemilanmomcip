@@ -1,4 +1,4 @@
-const CACHE='cemilan-momcip-v6.2.0';
+const CACHE='cemilan-momcip-v6.3.0';
 const CORE=['./','./index.html','./app.js?v=6.0.1','./manifest.webmanifest','./logo.jpg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)).catch(()=>{}));});
 self.addEventListener('activate',e=>{e.waitUntil((async()=>{for(const k of await caches.keys())if(k!==CACHE)await caches.delete(k);await self.clients.claim();})());});
