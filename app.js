@@ -17,29 +17,74 @@ let cloudSyncTimer=null, cloudSyncBusy=false, cloudSyncPending=false;
 function getAuth(){try{return JSON.parse(localStorage.getItem(AUTHKEY)||'null')}catch(_){return null}}
 function setAuth(v){if(v)localStorage.setItem(AUTHKEY,JSON.stringify(v));else localStorage.removeItem(AUTHKEY)}
 function setCloudStatus(text,state=''){const el=document.querySelector('#cloudStatus');if(!el)return;el.textContent=text;el.dataset.state=state}
-async function supaFetch(path,{method='GET',body=null,prefer=''}={}){
+async function authFetch(path,{method='GET',body=null}={}){
+  const h={'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json','Accept':'application/json'};
+  const r=await fetch(SUPABASE_URL+path,{method,headers:h,body:body===null?null:JSON.stringify(body)});
+  let j=null,text='';
+  try{text=await r.text();j=text?JSON.parse(text):null}catch(_){j=null}
+  if(!r.ok)throw new Error(j?.msg||j?.error_description||j?.error||text||('HTTP '+r.status));
+  return j;
+}
+function normalizeAuth(j){
+  if(!j)return j;
+  if(!j.expires_at&&j.expires_in)j.expires_at=Math.floor(Date.now()/1000)+Number(j.expires_in||0);
+  return j;
+}
+async function validateSession(){
   const a=getAuth();
   if(!a?.access_token)throw new Error('Belum login');
-  const h={'apikey':SUPABASE_PUBLISHABLE_KEY,'Authorization':'Bearer '+a.access_token,'Content-Type':'application/json'};
+  const r=await fetch(SUPABASE_URL+'/auth/v1/user',{headers:{'apikey':SUPABASE_PUBLISHABLE_KEY,'Authorization':'Bearer '+a.access_token,'Accept':'application/json'}});
+  const text=await r.text();let j=null;try{j=text?JSON.parse(text):null}catch(_){}
+  if(!r.ok)throw new Error(j?.msg||j?.error_description||j?.error||text||('Auth HTTP '+r.status));
+  return j;
+}
+async function supaFetch(path,{method='GET',body=null,prefer='',_retried=false}={}){
+  let a=getAuth();
+  if(!a?.access_token)throw new Error('Belum login');
+  const h={
+    'apikey':SUPABASE_PUBLISHABLE_KEY,
+    'Authorization':'Bearer '+a.access_token,
+    'Content-Type':'application/json',
+    'Accept':'application/json',
+    'Accept-Profile':'public',
+    'Content-Profile':'public'
+  };
   if(prefer)h['Prefer']=prefer;
   const r=await fetch(SUPABASE_URL+path,{method,headers:h,body:body===null?null:JSON.stringify(body)});
-  if(r.status===401&&a.refresh_token){await refreshSession();return supaFetch(path,{method,body,prefer})}
-  const text=await r.text();
-  if(!r.ok)throw new Error(text||('HTTP '+r.status));
-  return text?JSON.parse(text):null;
+  const text=await r.text();let parsed=null;try{parsed=text?JSON.parse(text):null}catch(_){}
+  if(r.status===401&&!_retried&&a.refresh_token){
+    await refreshSession();
+    return supaFetch(path,{method,body,prefer,_retried:true});
+  }
+  if(!r.ok){
+    const msg=parsed?.message||parsed?.msg||parsed?.error_description||parsed?.error||text||('HTTP '+r.status);
+    throw new Error(`HTTP ${r.status}: ${msg}`);
+  }
+  return parsed;
 }
 async function loginSupabase(email,password){
-  const r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=password',{method:'POST',headers:{'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},body:JSON.stringify({email,password})});
-  const j=await r.json();if(!r.ok)throw new Error(j?.msg||j?.error_description||j?.error||'Login gagal');
-  setAuth(j);return j;
+  const j=await authFetch('/auth/v1/token?grant_type=password',{method:'POST',body:{email,password}});
+  if(!j?.access_token)throw new Error('Login berhasil tetapi access token tidak diterima.');
+  setAuth(normalizeAuth(j));
+  await validateSession();
+  return j;
 }
-async function refreshSession(){const a=getAuth();if(!a?.refresh_token)throw new Error('Sesi berakhir');const r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:a.refresh_token})});const j=await r.json();if(!r.ok){setAuth(null);throw new Error('Sesi berakhir. Login ulang.')}setAuth(j);return j}
+async function refreshSession(){
+  const a=getAuth();if(!a?.refresh_token)throw new Error('Sesi tidak memiliki refresh token. Silakan login ulang.');
+  try{
+    const j=await authFetch('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:{refresh_token:a.refresh_token}});
+    if(!j?.access_token)throw new Error('Access token baru tidak diterima.');
+    setAuth(normalizeAuth(j));return j;
+  }catch(e){
+    throw new Error('Refresh sesi gagal: '+e.message);
+  }
+}
 function showLogin(message=''){
   let x=document.querySelector('#loginOverlay');if(!x)return;
   x.style.display='flex';document.querySelector('#loginMsg').textContent=message||'';
 }
 function hideLogin(){const x=document.querySelector('#loginOverlay');if(x)x.style.display='none'}
-window.doCloudLogin=async()=>{const email=document.querySelector('#loginEmail').value.trim(),password=document.querySelector('#loginPassword').value;if(!email||!password)return document.querySelector('#loginMsg').textContent='Email dan password wajib diisi.';const b=document.querySelector('#loginBtn');b.disabled=true;b.textContent='Masuk...';try{await loginSupabase(email,password);hideLogin();setCloudStatus('Online','ok');await bootstrapCloud()}catch(e){document.querySelector('#loginMsg').textContent='Login gagal: '+e.message}finally{b.disabled=false;b.textContent='Masuk'}}
+window.doCloudLogin=async()=>{const email=document.querySelector('#loginEmail').value.trim(),password=document.querySelector('#loginPassword').value;if(!email||!password)return document.querySelector('#loginMsg').textContent='Email dan password wajib diisi.';const b=document.querySelector('#loginBtn');b.disabled=true;b.textContent='Masuk...';try{await loginSupabase(email,password);setCloudStatus('Memuat data...','sync');await bootstrapCloud();hideLogin()}catch(e){console.error(e);document.querySelector('#loginMsg').textContent='Gagal masuk: '+e.message;showLogin(document.querySelector('#loginMsg').textContent)}finally{b.disabled=false;b.textContent='Masuk'}}
 window.cloudLogout=()=>{if(confirm('Keluar dari akun online?')){setAuth(null);setCloudStatus('Offline','');showLogin('Silakan login kembali.')}}
 function titleOrderType(v){return String(v||'').toUpperCase()==='RESELLER'?'Reseller':'Reguler'}
 function titleOrderStatus(v){v=String(v||'').toUpperCase();return v==='SELESAI'?'Selesai':v==='BATAL'?'Batal':'Baru'}
@@ -92,11 +137,11 @@ async function pullCloudState(){
   db=migrateCostingData(out);recalcAll();localStorage.setItem(DBKEY,JSON.stringify(db));return true;
 }
 async function bootstrapCloud(){
-  try{setCloudStatus('Memuat data...','sync');const hasRemote=await pullCloudState();if(hasRemote){setCloudStatus('Online','ok');render(active)}else{setCloudStatus('Upload awal...','sync');await pushFullState();render(active)}}catch(e){console.error(e);setCloudStatus('Gagal online','bad');alert('Koneksi Supabase gagal: '+e.message)}
+  try{setCloudStatus('Memuat data...','sync');const hasRemote=await pullCloudState();if(hasRemote){setCloudStatus('Online','ok');render(active)}else{setCloudStatus('Upload awal...','sync');await pushFullState();setCloudStatus('Online','ok');render(active)}}catch(e){console.error(e);setCloudStatus('Gagal online','bad');throw e}
 }
 async function cloudInit(){
   const a=getAuth();if(!a){showLogin();return}
-  try{if(a.expires_at&&Date.now()/1000>Number(a.expires_at)-60)await refreshSession();hideLogin();await bootstrapCloud()}catch(e){setAuth(null);showLogin(e.message)}
+  try{if(a.expires_at&&Date.now()/1000>Number(a.expires_at)-60)await refreshSession();await validateSession();await bootstrapCloud();hideLogin()}catch(e){console.error(e);showLogin('Koneksi online gagal: '+e.message)}
 }
 /* ===== /V6 ONLINE ===== */
 const getPrintWidth=()=>localStorage.getItem(PRINTKEY)||'80';
