@@ -92,7 +92,7 @@ function showLogin(message=''){
 }
 function hideLogin(){const x=document.querySelector('#loginOverlay');if(x)x.style.display='none'}
 window.doCloudLogin=async()=>{const email=document.querySelector('#loginEmail').value.trim(),password=document.querySelector('#loginPassword').value;if(!email||!password)return document.querySelector('#loginMsg').textContent='Email dan password wajib diisi.';const b=document.querySelector('#loginBtn');b.disabled=true;b.textContent='Masuk...';try{await loginSupabase(email,password);setCloudStatus('Memuat data...','sync');document.querySelector('#loginMsg').textContent='Menghubungkan database...';await bootstrapCloud();document.querySelector('#loginMsg').textContent='';hideLogin()}catch(e){console.error(e);document.querySelector('#loginMsg').textContent='Gagal masuk: '+e.message;showLogin(document.querySelector('#loginMsg').textContent)}finally{b.disabled=false;b.textContent='Masuk'}}
-window.cloudLogout=()=>{if(confirm('Keluar dari akun online?')){setAuth(null);setCloudStatus('Offline','');showLogin('Silakan login kembali.')}}
+window.cloudLogout=()=>{if(confirm('Keluar dari akun online?')){clearInterval(cloudPollTimer);setAuth(null);setCloudStatus('Offline','');showLogin('Silakan login kembali.')}}
 function titleOrderType(v){return String(v||'').toUpperCase()==='RESELLER'?'Reseller':'Reguler'}
 function titleOrderStatus(v){v=String(v||'').toUpperCase();return v==='SELESAI'?'Selesai':v==='BATAL'?'Batal':'Baru'}
 function titlePackType(v){return String(v||'').toUpperCase()==='OUTER'?'Outer':'Inner'}
@@ -112,19 +112,50 @@ function dbToCloud(){
   const audit_trail=(db.auditTrail||[]).map(a=>({id:a.id,event_time:a.at||new Date().toISOString(),entity:a.entity||'',action:a.action||'',reference:a.ref||null,note:a.note||null,before_data:a.before||null,after_data:a.after||null}));
   return {products,raw_materials,packaging,orders,order_items,raw_material_transactions,packaging_transactions,productions,production_raw_materials,production_packaging,audit_trail};
 }
-async function pushFullState(){
-  if(cloudSyncBusy){cloudSyncPending=true;return}cloudSyncBusy=true;setCloudStatus('Sinkronisasi...','sync');
+const STATE_ROW_ID='__CEMILAN_MOMCIP_STATE__';
+const DEVICEKEY='cemilanMomcip_deviceId_v1';
+const DIRTYKEY='cemilanMomcip_cloudDirty_v1';
+let cloudPollTimer=null;
+function getDeviceId(){let v=localStorage.getItem(DEVICEKEY);if(!v){v='DEV-'+Date.now()+'-'+Math.random().toString(36).slice(2,8);localStorage.setItem(DEVICEKEY,v)}return v}
+function setDirty(v){localStorage.setItem(DIRTYKEY,v?'1':'0')}
+function isDirty(){return localStorage.getItem(DIRTYKEY)==='1'}
+function stateHash(v){const str=JSON.stringify(v);let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(16)}
+async function upsertRows(table,rows){if(!rows.length)return[];return await supaFetch(`/rest/v1/${table}?on_conflict=id`,{method:'POST',body:rows,prefer:'resolution=merge-duplicates,return=representation'})||[]}
+async function fetchStateRow(){const r=await supaFetch(`/rest/v1/audit_trail?id=eq.${encodeURIComponent(STATE_ROW_ID)}&select=id,event_time,reference,note,after_data&limit=1`);return Array.isArray(r)&&r.length?r[0]:null}
+async function pushSharedState({mirror=true}={}){
+  if(cloudSyncBusy){cloudSyncPending=true;return}
+  if(!getAuth()?.access_token)return;
+  cloudSyncBusy=true;setCloudStatus('Sinkronisasi...','sync');
   try{
-    const d=dbToCloud();
-    for(const t of ['production_packaging','production_raw_materials','order_items','raw_material_transactions','packaging_transactions','audit_trail','productions','orders'])await clearTable(t);
-    // Master hanya dihapus setelah transaksi anak bersih.
-    for(const t of ['products','raw_materials','packaging'])await clearTable(t);
-    for(const t of ['products','raw_materials','packaging','orders','order_items','productions','raw_material_transactions','packaging_transactions','production_raw_materials','production_packaging','audit_trail'])await insertRows(t,d[t]);
-    setCloudStatus('Tersinkron','ok');localStorage.setItem('cemilanMomcip_lastSync',new Date().toISOString());
-  }catch(e){console.error(e);setCloudStatus('Gagal sync','bad')}
-  finally{cloudSyncBusy=false;if(cloudSyncPending){cloudSyncPending=false;setTimeout(pushFullState,400)}}
+    const payload=JSON.parse(JSON.stringify(db));
+    const hash=stateHash(payload);
+    await upsertRows('audit_trail',[{id:STATE_ROW_ID,event_time:new Date().toISOString(),entity:'SYSTEM',action:'SYNC_STATE',reference:getDeviceId(),note:hash,before_data:null,after_data:payload}]);
+    setDirty(false);localStorage.setItem('cemilanMomcip_lastSync',new Date().toISOString());localStorage.setItem('cemilanMomcip_lastCloudHash',hash);setCloudStatus('Online','ok');
+    if(mirror)setTimeout(()=>mirrorNormalizedState().catch(e=>console.warn('Mirror normalized gagal:',e.message)),50);
+    return true;
+  }catch(e){console.error('pushSharedState',e);setDirty(true);setCloudStatus('Belum tersinkron','bad');throw e}
+  finally{cloudSyncBusy=false;if(cloudSyncPending){cloudSyncPending=false;setTimeout(()=>pushSharedState(),250)}}
 }
-function queueCloudSync(){if(!getAuth()?.access_token)return;clearTimeout(cloudSyncTimer);cloudSyncTimer=setTimeout(pushFullState,700)}
+async function pullSharedState({force=false}={}){
+  const row=await fetchStateRow();if(!row?.after_data)return false;
+  const remoteHash=row.note||stateHash(row.after_data),localHash=stateHash(db);
+  if(force||remoteHash!==localHash){
+    if(isDirty()&&!force)return false;
+    db=migrateCostingData(row.after_data);recalcAll();localStorage.setItem(DBKEY,JSON.stringify(db));localStorage.setItem('cemilanMomcip_lastCloudHash',remoteHash);setDirty(false);render(active);
+  }
+  setCloudStatus('Online','ok');return true;
+}
+async function mirrorNormalizedState(){
+  // Mirror untuk Table Editor/reporting. Sinkron antar perangkat memakai STATE_ROW_ID di audit_trail.
+  const d=dbToCloud();
+  for(const t of ['production_packaging','production_raw_materials','order_items','raw_material_transactions','packaging_transactions','productions','orders'])await clearTable(t);
+  for(const t of ['products','raw_materials','packaging'])await clearTable(t);
+  for(const t of ['products','raw_materials','packaging','orders','order_items','productions','raw_material_transactions','packaging_transactions','production_raw_materials','production_packaging'])await insertRows(t,d[t]);
+}
+function queueCloudSync(){
+  if(!getAuth()?.access_token)return;
+  setDirty(true);clearTimeout(cloudSyncTimer);cloudSyncTimer=setTimeout(()=>pushSharedState().catch(()=>{}),120);
+}
 async function fetchAll(table,order=''){return await supaFetch(`/rest/v1/${table}?select=*${order?`&order=${order}`:''}`)||[]}
 async function pullCloudState(){
   const [products,raw,pack,orders,items,rtx,ptx,prods,prm,ppk,auditRows]=await Promise.all([
@@ -140,16 +171,30 @@ async function pullCloudState(){
   out.packagingTx=ptx.map(t=>({id:t.id,date:t.transaction_date,itemId:t.packaging_id,itemName:t.packaging_name,mode:t.transaction_type,qty:Number(t.qty||0),cost:Number(t.unit_cost||0),unit:t.unit||'',note:t.note||'',productionId:t.production_id||null}));
   const rmMap={},pkMap={};prm.forEach(u=>(rmMap[u.production_id]??=[]).push({itemId:u.material_id,name:u.material_name,qty:Number(u.qty||0),unit:u.unit||'',unitCost:Number(u.unit_cost||0),cost:Number(u.total_cost||0),sourceTxId:u.source_transaction_id||null}));ppk.forEach(u=>(pkMap[u.production_id]??=[]).push({itemId:u.packaging_id,name:u.packaging_name,qty:Number(u.qty||0),unit:u.unit||'',unitCost:Number(u.unit_cost||0),cost:Number(u.total_cost||0),sourceTxId:u.source_transaction_id||null}));
   out.productions=prods.map(p=>({id:p.id,no:p.production_no,date:p.production_date,productId:p.product_id,productName:p.product_name,qty:Number(p.qty_pcs||0),outputQty:Number(p.output_qty||0),outputUnit:String(p.output_unit||'Pcs').toUpperCase(),packSize:Number(p.pack_size||1),reject:Number(p.reject_qty||0),rejectOutputQty:Number(p.reject_output_qty||0),note:p.note||'',rawMaterialUsage:rmMap[p.id]||[],packagingUsage:pkMap[p.id]||[],otherCosts:{gas:Number(p.cost_gas||0),listrik:Number(p.cost_electricity||0),tenagaKerja:Number(p.cost_labor||0),ongkosProduksi:Number(p.cost_production||0),lainnya:Number(p.cost_other||0)},costingCaptured:true}));
-  out.auditTrail=auditRows.map(a=>({id:a.id,at:a.event_time,entity:a.entity,action:a.action,ref:a.reference,note:a.note,before:a.before_data,after:a.after_data}));
+  out.auditTrail=auditRows.filter(a=>a.id!==STATE_ROW_ID).map(a=>({id:a.id,at:a.event_time,entity:a.entity,action:a.action,ref:a.reference,note:a.note,before:a.before_data,after:a.after_data}));
   db=migrateCostingData(out);recalcAll();localStorage.setItem(DBKEY,JSON.stringify(db));return true;
 }
 async function bootstrapCloud(){
-  try{setCloudStatus('Memuat data...','sync');const hasRemote=await pullCloudState();if(hasRemote){setCloudStatus('Online','ok');render(active)}else{setCloudStatus('Upload awal...','sync');await pushFullState();setCloudStatus('Online','ok');render(active)}}catch(e){console.error(e);setCloudStatus('Gagal online','bad');throw e}
+  try{
+    setCloudStatus('Memuat data...','sync');
+    const hasState=await pullSharedState({force:true});
+    if(hasState){setCloudStatus('Online','ok');render(active);return}
+    // Migrasi satu kali dari tabel normal V6.0-V6.4 bila sudah ada.
+    const hasNormalized=await pullCloudState();
+    if(hasNormalized){await pushSharedState({mirror:false});setCloudStatus('Online','ok');render(active);return}
+    setCloudStatus('Upload awal...','sync');await pushSharedState();setCloudStatus('Online','ok');render(active);
+  }catch(e){console.error(e);setCloudStatus('Gagal online','bad');throw e}
 }
 async function cloudInit(){
   const a=getAuth();if(!a){showLogin();return}
-  try{if(a.expires_at&&Date.now()/1000>Number(a.expires_at)-60)await refreshSession();await validateSession();await bootstrapCloud();hideLogin()}catch(e){console.error(e);showLogin('Koneksi online gagal: '+e.message)}
+  try{if(a.expires_at&&Date.now()/1000>Number(a.expires_at)-60)await refreshSession();await validateSession();await bootstrapCloud();hideLogin();startCloudPolling()}catch(e){console.error(e);showLogin('Koneksi online gagal: '+e.message)}
 }
+function startCloudPolling(){
+  clearInterval(cloudPollTimer);cloudPollTimer=setInterval(async()=>{if(!getAuth()?.access_token||cloudSyncBusy)return;try{if(isDirty())await pushSharedState();else await pullSharedState()}catch(e){console.warn('poll sync',e.message)}},5000)
+}
+window.cloudSyncNow=async()=>{try{setCloudStatus('Sinkronisasi...','sync');if(isDirty())await pushSharedState();else await pullSharedState({force:true});setCloudStatus('Online','ok')}catch(e){setCloudStatus('Gagal sync','bad');alert('Sinkronisasi gagal: '+e.message)}};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&getAuth()?.access_token&&!cloudSyncBusy){(isDirty()?pushSharedState():pullSharedState({force:true})).catch(()=>{})}});
+window.addEventListener('online',()=>{if(getAuth()?.access_token)(isDirty()?pushSharedState():pullSharedState({force:true})).catch(()=>{})});
 /* ===== /V6 ONLINE ===== */
 const getPrintWidth=()=>localStorage.getItem(PRINTKEY)||'80';
 const seed={
@@ -448,25 +493,107 @@ function renderProduction(){
    <h3>Pemakaian Raw Material Aktual</h3><div class="row3"><div><label>Bahan</label><select id="pRawItem">${productionUsageOptions('raw')}</select></div><div><label>Qty Pemakaian</label><input id="pRawQty" type="number" min="0.001" step="0.001"></div><div style="display:flex;align-items:end"><button class="btn secondary" style="width:100%" onclick="addProdUsage('raw')">+ Tambah Bahan</button></div></div><div id="prodRawDraft"></div>
    <h3>Pemakaian Packaging Aktual</h3><div class="row3"><div><label>Packaging</label><select id="pPackItem">${productionUsageOptions('pack')}</select></div><div><label>Qty Pemakaian</label><input id="pPackQty" type="number" min="0.001" step="0.001"></div><div style="display:flex;align-items:end"><button class="btn secondary" style="width:100%" onclick="addProdUsage('pack')">+ Tambah Packaging</button></div></div><div id="prodPackDraft"></div>
    <h3>Biaya Produksi Lainnya</h3><div class="row3"><div><label>Gas</label><input id="pCostGas" type="number" min="0" value="0"></div><div><label>Listrik</label><input id="pCostElectric" type="number" min="0" value="0"></div><div><label>Tenaga Kerja</label><input id="pCostLabor" type="number" min="0" value="0"></div><div><label>Ongkos Produksi</label><input id="pCostProcess" type="number" min="0" value="0"></div><div><label>Biaya Lainnya</label><input id="pCostOther" type="number" min="0" value="0"></div></div>
-   <p class="small">Pemakaian yang dimasukkan di sini otomatis menjadi transaksi Pemakaian / Keluar pada Raw Material dan Packaging. Harga costing dibekukan menggunakan Avg Cost persediaan pada saat produksi disimpan.</p><button class="btn" onclick="addProduction()">Simpan Hasil Produksi & Costing</button></div>
+   <p class="small">Pemakaian yang dimasukkan di sini otomatis menjadi transaksi Pemakaian / Keluar pada Raw Material dan Packaging. Harga costing dibekukan menggunakan Avg Cost persediaan pada saat produksi disimpan.</p><button class="btn" type="button" onclick="addProduction()">Simpan Hasil Produksi & Costing</button></div>
    <div class="card"><h2>Rekap Produksi</h2><div class="tablewrap fit"><table><thead><tr><th>Tanggal</th><th>No. Produksi</th><th>Produk</th><th class="num">Good</th><th>Satuan</th><th class="num">Reject</th><th class="num">HPP/Unit</th><th>Status Costing</th><th>Catatan</th><th class="no-print">Aksi</th></tr></thead><tbody>${db.productions.slice().reverse().map(x=>{const c=batchCosting(x);return`<tr><td>${dateID(x.date)}</td><td>${esc(x.no)}</td><td>${esc(x.productName)}</td><td class="num">${fmt(x.outputQty||x.qty)}</td><td>${unitLabel(x.outputUnit)}</td><td class="num">${fmt(x.reject||0)}</td><td class="num">${c.ready?money(c.hppUnit):'-'}</td><td>${costingStatus(x)}</td><td>${esc(x.note||'-')}</td><td class="no-print"><button class="btn secondary smallbtn" onclick="editProduction('${x.id}')">Edit</button> <button class="btn danger smallbtn" onclick="deleteProduction('${x.id}')">Delete</button></td></tr>`}).join('')||'<tr><td colspan="10" class="empty">Belum ada produksi</td></tr>'}</tbody></table></div></div>`;
   setTimeout(()=>{syncProductionUnit();renderProdUsageDraft()},0);
 }
-window.addProduction=()=>{
-  const p=db.products.find(x=>x.id===$('#pProduct')?.value),entered=Number($('#pQty')?.value),outputUnit=$('#pOutputUnit')?.value||'PCS',rejectEntered=Number($('#pReject')?.value||0),date=$('#pDate')?.value||today();
-  if(!p||entered<=0)return alert('Qty hasil produksi harus lebih dari 0.');
-  if(!prodRawDraft.length&&!prodPackDraft.length&&![Number($('#pCostGas')?.value||0),Number($('#pCostElectric')?.value||0),Number($('#pCostLabor')?.value||0),Number($('#pCostProcess')?.value||0),Number($('#pCostOther')?.value||0)].some(x=>x>0)){if(!confirm('Belum ada pemakaian Raw Material, Packaging, atau biaya lain. Simpan produksi tanpa costing aktual?'))return;}
-  for(const u of prodRawDraft){if(u.sourceTxId)continue;const item=db.materials.find(x=>x.id===u.itemId);if(!item||Number(item.stock||0)<Number(u.qty||0))return alert(`Stok ${u.name} tidak cukup.`)}
-  for(const u of prodPackDraft){if(u.sourceTxId)continue;const item=db.packaging.find(x=>x.id===u.itemId);if(!item||Number(item.stock||0)<Number(u.qty||0))return alert(`Stok ${u.name} tidak cukup.`)}
-  const packSize=Math.max(1,Number(p.packSize||1)),qtyPcs=outputUnit==='PACK'?entered*packSize:entered,rejectPcs=outputUnit==='PACK'?rejectEntered*packSize:rejectEntered,no=nextProductionNo(date),id=uid('P');
-  const rawUsage=prodRawDraft.map(u=>({...u,unitCost:u.sourceTxId?Number(u.unitCost||0):Number(db.materials.find(x=>x.id===u.itemId)?.avgCost||u.unitCost||0)})).map(u=>({...u,cost:Number(u.qty)*Number(u.unitCost)}));
-  const packagingUsage=prodPackDraft.map(u=>({...u,unitCost:u.sourceTxId?Number(u.unitCost||0):Number(db.packaging.find(x=>x.id===u.itemId)?.avgCost||u.unitCost||0)})).map(u=>({...u,cost:Number(u.qty)*Number(u.unitCost)}));
-  const otherCosts={gas:Number($('#pCostGas')?.value||0),listrik:Number($('#pCostElectric')?.value||0),tenagaKerja:Number($('#pCostLabor')?.value||0),ongkosProduksi:Number($('#pCostProcess')?.value||0),lainnya:Number($('#pCostOther')?.value||0)};
-  rawUsage.forEach(u=>{const item=db.materials.find(x=>x.id===u.itemId);if(u.sourceTxId){const t=db.materialTx.find(x=>x.id===u.sourceTxId);if(t){t.productionId=id;t.productionNo=no;t.note=t.note||`Produksi ${no} - ${p.name}`;t.cost=Number(t.cost||u.unitCost||0)}}else{item.stock-=Number(u.qty);db.materialTx.push({id:uid('T'),date,itemId:item.id,itemName:item.name,mode:'OUT',qty:Number(u.qty),cost:Number(u.unitCost),unit:item.unit,note:`Produksi ${no} - ${p.name}`,productionId:id,productionNo:no})}});
-  packagingUsage.forEach(u=>{const item=db.packaging.find(x=>x.id===u.itemId);if(u.sourceTxId){const t=db.packagingTx.find(x=>x.id===u.sourceTxId);if(t){t.productionId=id;t.productionNo=no;t.note=t.note||`Produksi ${no} - ${p.name}`;t.cost=Number(t.cost||u.unitCost||0)}}else{item.stock-=Number(u.qty);db.packagingTx.push({id:uid('T'),date,itemId:item.id,itemName:item.name,mode:'OUT',qty:Number(u.qty),cost:Number(u.unitCost),unit:item.unit,note:`Produksi ${no} - ${p.name}`,productionId:id,productionNo:no})}});
-  db.fgStock[p.id]=(Number(db.fgStock[p.id])||0)+qtyPcs;
-  db.productions.push({id,no,date,productId:p.id,productName:p.name,qty:qtyPcs,outputQty:entered,outputUnit,packSize,reject:rejectPcs,rejectOutputQty:rejectEntered,note:$('#pNote')?.value||'',rawMaterialUsage:rawUsage,packagingUsage,otherCosts,costingCaptured:true});
-  prodRawDraft=[];prodPackDraft=[];save();
+window.addProduction=async()=>{
+  try{
+    const productId=$('#pProduct')?.value||'';
+    const p=db.products.find(x=>x.id===productId);
+    const entered=Number($('#pQty')?.value||0);
+    const outputUnit=String($('#pOutputUnit')?.value||'PCS').toUpperCase();
+    const rejectEntered=Number($('#pReject')?.value||0);
+    const date=$('#pDate')?.value||today();
+    if(!date)return alert('Tanggal produksi wajib diisi.');
+    if(!p)return alert('Pilih produk terlebih dahulu.');
+    if(!Number.isFinite(entered)||entered<=0)return alert('Qty hasil produksi harus lebih dari 0.');
+    if(!Number.isFinite(rejectEntered)||rejectEntered<0)return alert('Qty reject tidak valid.');
+
+    const otherCosts={
+      gas:Number($('#pCostGas')?.value||0),
+      listrik:Number($('#pCostElectric')?.value||0),
+      tenagaKerja:Number($('#pCostLabor')?.value||0),
+      ongkosProduksi:Number($('#pCostProcess')?.value||0),
+      lainnya:Number($('#pCostOther')?.value||0)
+    };
+    if(!prodRawDraft.length&&!prodPackDraft.length&&!Object.values(otherCosts).some(x=>x>0)){
+      if(!confirm('Belum ada pemakaian Raw Material, Packaging, atau biaya lain. Simpan produksi tanpa costing aktual?'))return;
+    }
+
+    // Hitung stok dari transaksi terlebih dahulu supaya validasi tidak memakai saldo visual yang stale.
+    recalcAll();
+    for(const u of prodRawDraft){
+      if(u.sourceTxId)continue;
+      const item=db.materials.find(x=>x.id===u.itemId);
+      if(!item)return alert(`Raw Material ${u.name} tidak ditemukan di Master.`);
+      if(Number(item.stock||0)<Number(u.qty||0))return alert(`Stok ${u.name} tidak cukup. Tersedia ${fmt(item.stock)} ${item.unit}.`);
+    }
+    for(const u of prodPackDraft){
+      if(u.sourceTxId)continue;
+      const item=db.packaging.find(x=>x.id===u.itemId);
+      if(!item)return alert(`Packaging ${u.name} tidak ditemukan di Master.`);
+      if(Number(item.stock||0)<Number(u.qty||0))return alert(`Stok ${u.name} tidak cukup. Tersedia ${fmt(item.stock)} ${item.unit}.`);
+    }
+
+    const packSize=Math.max(1,Number(p.packSize||1));
+    const qtyPcs=outputUnit==='PACK'?entered*packSize:entered;
+    const rejectPcs=outputUnit==='PACK'?rejectEntered*packSize:rejectEntered;
+    const no=nextProductionNo(date);
+    const id=uid('P');
+
+    const rawUsage=prodRawDraft.map(u=>{
+      const master=db.materials.find(x=>x.id===u.itemId);
+      const unitCost=u.sourceTxId?Number(u.unitCost||0):Number(master?.avgCost||u.unitCost||0);
+      return {...u,unitCost,cost:Number(u.qty||0)*unitCost};
+    });
+    const packagingUsage=prodPackDraft.map(u=>{
+      const master=db.packaging.find(x=>x.id===u.itemId);
+      const unitCost=u.sourceTxId?Number(u.unitCost||0):Number(master?.avgCost||u.unitCost||0);
+      return {...u,unitCost,cost:Number(u.qty||0)*unitCost};
+    });
+
+    // Link / bentuk transaksi OUT. Saldo tidak dimutasi manual; recalcAll menjadi satu sumber saldo.
+    rawUsage.forEach(u=>{
+      const item=db.materials.find(x=>x.id===u.itemId);
+      if(u.sourceTxId){
+        const t=db.materialTx.find(x=>x.id===u.sourceTxId);
+        if(t){t.productionId=id;t.productionNo=no;t.note=t.note||`Produksi ${no} - ${p.name}`;t.cost=Number(t.cost||u.unitCost||0)}
+      }else{
+        db.materialTx.push({id:uid('T'),date,itemId:item.id,itemName:item.name,mode:'OUT',qty:Number(u.qty),cost:Number(u.unitCost),unit:item.unit,note:`Produksi ${no} - ${p.name}`,productionId:id,productionNo:no});
+      }
+    });
+    packagingUsage.forEach(u=>{
+      const item=db.packaging.find(x=>x.id===u.itemId);
+      if(u.sourceTxId){
+        const t=db.packagingTx.find(x=>x.id===u.sourceTxId);
+        if(t){t.productionId=id;t.productionNo=no;t.note=t.note||`Produksi ${no} - ${p.name}`;t.cost=Number(t.cost||u.unitCost||0)}
+      }else{
+        db.packagingTx.push({id:uid('T'),date,itemId:item.id,itemName:item.name,mode:'OUT',qty:Number(u.qty),cost:Number(u.unitCost),unit:item.unit,note:`Produksi ${no} - ${p.name}`,productionId:id,productionNo:no});
+      }
+    });
+
+    const prod={id,no,date,productId:p.id,productName:p.name,qty:qtyPcs,outputQty:entered,outputUnit,packSize,reject:rejectPcs,rejectOutputQty:rejectEntered,note:$('#pNote')?.value||'',rawMaterialUsage:rawUsage,packagingUsage,otherCosts,costingCaptured:true};
+    db.productions.push(prod);
+    recalcAll();
+    audit('Produksi','CREATE',no,null,prod,'Input hasil produksi');
+    prodRawDraft=[];prodPackDraft=[];
+    localStorage.setItem(DBKEY,JSON.stringify(db));
+    render(active);
+    setCloudStatus('Menyimpan produksi...','sync');
+    try{
+      await pushSharedState();
+      setCloudStatus('Online','ok');
+      alert(`Produksi ${no} berhasil disimpan.`);
+    }catch(syncErr){
+      console.error('Sync produksi gagal',syncErr);
+      setCloudStatus('Belum tersinkron','bad');
+      alert(`Produksi ${no} sudah tersimpan di perangkat, tetapi sinkronisasi online gagal.\n${syncErr.message}`);
+    }
+  }catch(e){
+    console.error('addProduction',e);
+    alert('Gagal menyimpan produksi: '+(e?.message||e));
+  }
 }
 
 window.editProduction=id=>{const p=db.productions.find(x=>x.id===id);if(!p)return;const before=JSON.parse(JSON.stringify(p));const date=prompt('Tanggal produksi (YYYY-MM-DD):',p.date);if(date===null)return;const out=prompt(`Hasil Good (${unitLabel(p.outputUnit)}):`,p.outputQty||p.qty);if(out===null)return;const rej=prompt(`Reject (${unitLabel(p.outputUnit)}):`,p.rejectOutputQty||0);if(rej===null)return;const note=prompt('Catatan / Batch:',p.note||'');if(note===null)return;for(const u of (p.rawMaterialUsage||[])){const q=prompt(`Pemakaian RM - ${u.name} (${u.unit}):`,u.qty);if(q===null)return;u.qty=Number(q)||0;u.cost=u.qty*Number(u.unitCost||0);const t=db.materialTx.find(t=>t.productionId===p.id&&t.itemId===u.itemId);if(t){t.qty=u.qty;t.date=date;t.cost=Number(u.unitCost||t.cost||0)}}for(const u of (p.packagingUsage||[])){const q=prompt(`Pemakaian Packaging - ${u.name} (${u.unit}):`,u.qty);if(q===null)return;u.qty=Number(q)||0;u.cost=u.qty*Number(u.unitCost||0);const t=db.packagingTx.find(t=>t.productionId===p.id&&t.itemId===u.itemId);if(t){t.qty=u.qty;t.date=date;t.cost=Number(u.unitCost||t.cost||0)}}const oc=p.otherCosts||{};for(const [k,label] of [['gas','Gas'],['listrik','Listrik'],['tenagaKerja','Tenaga Kerja'],['ongkosProduksi','Ongkos Produksi'],['lainnya','Biaya Lainnya']]){const v=prompt(label+':',Number(oc[k]||0));if(v===null)return;oc[k]=Number(v)||0}p.otherCosts=oc;p.date=date;p.outputQty=Number(out)||0;p.rejectOutputQty=Number(rej)||0;p.qty=(String(p.outputUnit).toUpperCase()==='PACK'?p.outputQty*Number(p.packSize||1):p.outputQty);p.reject=(String(p.outputUnit).toUpperCase()==='PACK'?p.rejectOutputQty*Number(p.packSize||1):p.rejectOutputQty);p.note=note;recalcAll();audit('Produksi','EDIT',p.no,before,p,'Koreksi hasil produksi/costing');save()}

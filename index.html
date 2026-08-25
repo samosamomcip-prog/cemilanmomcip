@@ -44,7 +44,7 @@
 </div>
 <header>
   <div class="brand"><img src="logo.jpg" alt="Logo Cemilan Momcip"><div><h1>CEMILAN MOMCIP</h1><div class="tag">Homemade Snack &amp; Drink With Love</div></div></div>
-  <div class="head-actions"><span id="cloudStatus" class="cloudpill">Offline</span><button class="btn secondary" style="padding:7px 9px;font-size:11px" onclick="cloudLogout()">Keluar</button><button id="installBtn" class="btn secondary" style="display:none;padding:8px 10px">Install</button><span id="clock" class="small"></span></div>
+  <div class="head-actions"><span id="cloudStatus" class="cloudpill" onclick="cloudSyncNow()" title="Klik untuk sinkronisasi" style="cursor:pointer">Offline</span><button class="btn secondary" style="padding:7px 9px;font-size:11px" onclick="cloudLogout()">Keluar</button><button id="installBtn" class="btn secondary" style="display:none;padding:8px 10px">Install</button><span id="clock" class="small"></span></div>
 </header>
 <div class="wrap">
   <section id="dashboard" class="section active"></section>
@@ -57,7 +57,7 @@
   <section id="settings" class="section"></section>
 </div>
 <div class="bottomnav no-print" id="bottomnav"></div>
-<script src="app.js?v=6.2.0"></script>
+<script src="app.js?v=6.5.0"></script>
 <script>
 if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
 let deferredInstallPrompt=null;
