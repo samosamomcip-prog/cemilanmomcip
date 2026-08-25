@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#fff7f5" />
+  <title>CEMILAN MOMCIP</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <style>
+    :root{--bg:#fff9f7;--card:#fff;--ink:#2c241f;--muted:#766b65;--line:#eaded9;--accent:#e96c7c;--accent2:#b35b37;--soft:#fff0ee;--ok:#2e7d32;--warn:#b7791f;--bad:#b3261e;--navh:70px}
+    *{box-sizing:border-box}html{background:var(--bg)}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+    header{position:sticky;top:0;z-index:20;background:#fff;color:var(--ink);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);box-shadow:0 2px 10px #7b4b3912}
+    .brand{display:flex;align-items:center;gap:10px;min-width:0}.brand img{width:50px;height:50px;border-radius:50%;object-fit:cover;border:1px solid var(--line)}.brand h1{font-size:20px;margin:0;letter-spacing:.3px;color:#60301f}.brand .tag{font-size:11px;color:var(--accent);font-weight:700}.head-actions{display:flex;gap:8px;align-items:center}.wrap{max-width:980px;margin:auto;padding:14px 12px calc(var(--navh) + 24px)}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin-bottom:12px;box-shadow:0 2px 8px #7b4b390d}.card h2{font-size:18px;margin:0 0 12px}.card h3{font-size:15px;margin:10px 0}.cardhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.cardhead h2{margin:0}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.kpi{padding:14px;border-radius:16px;background:linear-gradient(180deg,#fff,#fffaf8);border:1px solid var(--line)}.kpi b{font-size:22px;display:block}.kpi span{font-size:12px;color:var(--muted)}
+    label{font-size:12px;font-weight:700;color:#5f5550;display:block;margin-bottom:4px}input,select,textarea{width:100%;padding:11px;border-radius:11px;border:1px solid #d9cbc5;background:#fff;font:inherit;color:var(--ink)}textarea{min-height:76px}.row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:10px}.row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:10px}.full{grid-column:1/-1}
+    .btn{border:0;border-radius:11px;padding:10px 12px;font-weight:750;cursor:pointer;background:var(--accent);color:white}.btn.secondary{background:#f1e7e3;color:var(--ink)}.btn.danger{background:var(--bad)}.btn.ok{background:var(--ok)}.btn.smallbtn{padding:7px 9px;font-size:12px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.actions .btn{flex:1}
+    .tablewrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:12px}table{width:100%;border-collapse:collapse;font-size:13px;min-width:0;background:white;table-layout:auto}.tablewrap.fit table{width:max-content;min-width:100%;table-layout:auto}.tablewrap.fit th,.tablewrap.fit td{white-space:nowrap}.tablewrap.fit td.wrapcell{white-space:normal;min-width:120px}.tablewrap.autofit table{width:100%;min-width:0;table-layout:auto}.tablewrap.autofit th,.tablewrap.autofit td{white-space:normal}.tablewrap.autofit .num{white-space:nowrap}th,td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:10px;text-transform:uppercase;color:#7d716b;background:#fff7f5;white-space:nowrap}.num{text-align:right;white-space:nowrap}.badge{display:inline-block;padding:4px 7px;border-radius:999px;background:#eee5e1;font-size:10px;font-weight:800;white-space:nowrap}.badge.reg{background:#e7f0ff;color:#29528a}.badge.res{background:#fff0cf;color:#845f00}.badge.bad{background:#fee8e6;color:#a72820}.badge.ok{background:#e5f5e6;color:#2d6e32}
+    .section{display:none}.section.active{display:block}.small{font-size:12px;color:var(--muted)}.empty{padding:18px;text-align:center;color:var(--muted)}
+    .mobilelist{display:none}.ordercard,.reportcard{border:1px solid var(--line);border-radius:14px;padding:12px;margin:8px 0;background:#fff}.ordercard .top,.reportcard .top{display:flex;justify-content:space-between;gap:8px}.kv{display:grid;grid-template-columns:110px 1fr;gap:5px;font-size:12px;margin-top:6px}.kv span:nth-child(odd){color:var(--muted)}
+    .bottomnav{position:fixed;bottom:0;left:0;right:0;height:var(--navh);background:#fff;border-top:1px solid var(--line);display:flex;overflow-x:auto;z-index:30;box-shadow:0 -2px 10px #7b4b3910;padding-bottom:env(safe-area-inset-bottom)}.bottomnav button{border:0;background:#fff;min-width:82px;flex:1 0 82px;padding:9px 5px;font-size:10px;color:#6d625d}.bottomnav button .ico{display:block;font-size:20px;line-height:22px}.bottomnav button.active{font-weight:800;color:var(--accent);background:#fff7f5}
+    .subtabs{display:flex;gap:7px;margin:10px 0 14px;overflow-x:auto}.subtabs button{border:1px solid var(--line);background:#fff;padding:9px 11px;border-radius:10px;white-space:nowrap;font-weight:750;color:var(--muted)}.subtabs button.active{background:var(--soft);color:var(--accent);border-color:#efb9bf}.cost-warning{padding:10px;border-radius:11px;background:#fff8e5;border:1px solid #edcf8c;color:#785b17;margin:10px 0}.cost-total td{background:#fff0ee}.cost-hpp td{background:#fbe4e0;font-size:1.05em}.costing-note{font-size:11px;color:var(--muted)}
+    .print-only{display:none}.print-title{display:flex;align-items:center;gap:12px;margin-bottom:14px}.print-title img{width:64px;height:64px;border-radius:50%}
+    @media(min-width:760px){.wrap{padding-bottom:96px}.bottomnav{max-width:980px;left:50%;transform:translateX(-50%);border:1px solid var(--line);border-radius:18px 18px 0 0}}
+    @media(max-width:640px){.grid3,.row3{grid-template-columns:1fr 1fr}.hide-mobile{display:none}.desktop-table{display:none}.mobilelist{display:block}.brand h1{font-size:18px}.brand img{width:44px;height:44px}.wrap{padding-left:10px;padding-right:10px}.grid3{grid-template-columns:1fr 1fr}.tablewrap.compact table{min-width:0}}
+    @media(max-width:390px){.row,.row3{grid-template-columns:1fr}.grid3{grid-template-columns:1fr 1fr}.kv{grid-template-columns:95px 1fr}}
+    @media print{header,.bottomnav,.no-print{display:none!important}.wrap{padding:0;max-width:none}.section{display:none!important}.section.printing{display:block!important}.card{border:0;box-shadow:none;padding:0}.print-only{display:block!important}body{background:#fff;color:#000}.tablewrap{overflow:visible;border:0}table{min-width:0;font-size:10px}th,td{padding:5px 4px}.mobilelist{display:none!important}.desktop-table{display:block!important}.kpi{border:1px solid #ddd;box-shadow:none}.grid3{grid-template-columns:repeat(3,1fr)}}
+  </style>
+</head>
+<body>
+<header>
+  <div class="brand"><img src="logo.jpg" alt="Logo Cemilan Momcip"><div><h1>CEMILAN MOMCIP</h1><div class="tag">Homemade Snack &amp; Drink With Love</div></div></div>
+  <div class="head-actions"><button id="installBtn" class="btn secondary" style="display:none;padding:8px 10px">Install</button><span id="clock" class="small"></span></div>
+</header>
+<div class="wrap">
+  <section id="dashboard" class="section active"></section>
+  <section id="order" class="section"></section>
+  <section id="material" class="section"></section>
+  <section id="packaging" class="section"></section>
+  <section id="production" class="section"></section>
+  <section id="stock" class="section"></section>
+  <section id="reports" class="section"></section>
+  <section id="settings" class="section"></section>
+</div>
+<div class="bottomnav no-print" id="bottomnav"></div>
+<script src="app.js?v=5.1.0"></script>
+<script>
+if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+let deferredInstallPrompt=null;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;const b=document.getElementById('installBtn');if(b)b.style.display='inline-block';});
+document.addEventListener('click',async e=>{if(e.target?.id==='installBtn'&&deferredInstallPrompt){deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;e.target.style.display='none';}});
+window.addEventListener('appinstalled',()=>{const b=document.getElementById('installBtn');if(b)b.style.display='none';});
+</script>
+</body></html>
